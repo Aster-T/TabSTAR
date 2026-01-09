@@ -9,6 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 
+# TODO: we are currently saving the whole model rather than just the LoRA weights... this is super wasteful.
 class CheckpointManager:
 
     def __init__(self, do_average: bool, output_dir: Optional[str]):

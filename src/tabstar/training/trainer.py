@@ -145,7 +145,7 @@ class TabStarTrainer:
         return self.model
 
     def delete_model(self):
-        shutil.rmtree(self.cp_manager.to_load_dir)
+        shutil.rmtree(self.cp_manager.save_dir)
 
     def will_next_epoch_exceed_budget(self, epoch: int, start_time) -> bool:
         elapsed = round(time.time() - start_time, 1)
