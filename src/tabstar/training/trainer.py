@@ -16,6 +16,7 @@ from tabstar.training.checkpoint_averaging import CheckpointManager
 from tabstar.training.dataloader import get_dataloader
 from tabstar.training.early_stopping import EarlyStopping
 from tabstar.training.hyperparams import set_accumulation_steps
+from sap_rpt_oss.constants import ModelSize
 from tabstar.training.lora import load_pretrained, load_finetuned
 from tabstar.training.metrics import calculate_metric, apply_loss_fn, calculate_loss
 from tabstar.training.optimizer import get_optimizer, get_scheduler
@@ -24,9 +25,27 @@ from tabstar.training.utils import concat_predictions
 
 class TabStarTrainer:
 
-    def __init__(self, max_epochs: int, lora_lr: float, lora_wd: float, lora_r: int, lora_alpha: float,
-                 lora_dropout: float, lora_batch: int, patience: int, global_batch: int, device: torch.device,
-                 model_version: str, cp_average: bool, time_limit: int, output_dir: Optional[str], val_batch_size: int):
+    def __init__(
+        self,
+        max_epochs: int,
+        lora_lr: float,
+        lora_wd: float,
+        lora_r: int,
+        lora_alpha: float,
+        lora_dropout: float,
+        lora_batch: int,
+        patience: int,
+        global_batch: int,
+        device: torch.device,
+        model_version: str,
+        cp_average: bool,
+        time_limit: int,
+        output_dir: Optional[str],
+        val_batch_size: int,
+        encoder_backend: str = "tabstar",
+        rpt_model_size: ModelSize = ModelSize.base,
+        rpt_checkpoint_path: Optional[str] = None,
+    ):
         self.lora_batch = lora_batch
         self.global_batch = global_batch
         self.val_batch_size = val_batch_size
@@ -35,8 +54,18 @@ class TabStarTrainer:
         self.device = device
         self.cp_average = cp_average
         self.model_version = model_version
-        self.model = load_pretrained(model_version=model_version, lora_r=lora_r, lora_alpha=lora_alpha,
-                                     dropout=lora_dropout)
+        self.encoder_backend = encoder_backend
+        self.rpt_model_size = rpt_model_size
+        self.rpt_checkpoint_path = rpt_checkpoint_path
+        self.model = load_pretrained(
+            model_version=model_version,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            dropout=lora_dropout,
+            encoder_backend=self.encoder_backend,
+            rpt_model_size=self.rpt_model_size,
+            rpt_checkpoint_path=self.rpt_checkpoint_path,
+        )
         self.model.to(self.device)
         self.optimizer = get_optimizer(model=self.model, lr=lora_lr, wd=lora_wd)
         self.scheduler = get_scheduler(optimizer=self.optimizer, max_lr=lora_lr, epochs=self.max_epochs)
@@ -98,7 +127,10 @@ class TabStarTrainer:
         return original_mean_batch_loss
 
     def _do_forward(self, data: TabSTARData) -> Tuple[Tensor, Tensor]:
-        predictions = self.model(x_txt=data.x_txt, x_num=data.x_num, d_output=data.d_output)
+        if data.rpt_data is not None:
+            predictions = self.model(rpt_data=data.rpt_data, d_output=data.d_output)
+        else:
+            predictions = self.model(x_txt=data.x_txt, x_num=data.x_num, d_output=data.d_output)
         loss = calculate_loss(predictions=predictions, y=data.y, d_output=data.d_output)
         return loss, predictions
 
@@ -139,7 +171,13 @@ class TabStarTrainer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-        self.model = load_finetuned(self.cp_manager.to_load_dir, tabstar_version=self.model_version)
+        self.model = load_finetuned(
+            self.cp_manager.to_load_dir,
+            tabstar_version=self.model_version,
+            encoder_backend=self.encoder_backend,
+            rpt_model_size=self.rpt_model_size,
+            rpt_checkpoint_path=self.rpt_checkpoint_path,
+        )
         self.model.to(self.device)
         self.model.eval()
         return self.model

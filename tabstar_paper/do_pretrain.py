@@ -61,6 +61,9 @@ if __name__ == "__main__":
     parser.add_argument('--analysis', action='store_true', default=False)
     parser.add_argument('--debug', action='store_true', default=False)
     parser.add_argument('--checkpoint', type=int, default=None)
+    parser.add_argument('--encoder_backend', type=str, default="tabstar", choices=["tabstar", "rpt"])
+    parser.add_argument('--rpt_model_size', type=str, default="base")
+    parser.add_argument('--rpt_checkpoint', type=str, default=None)
     # Arch
     parser.add_argument('--tabular_layers', type=int, default=TABULAR_LAYERS)
     parser.add_argument('--e5_unfreeze_layers', type=int, default=TEXTUAL_UNFREEZE_LAYERS)

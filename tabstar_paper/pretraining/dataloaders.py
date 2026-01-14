@@ -49,6 +49,15 @@ def get_dev_dataloader(data_dir: str, batch_size: int) -> DataLoader:
 def tabular_collate_fn(batch):
     """We want to process the batch, so the (x, y) become np arrays, while only the first property returns.
     Here we assume that the properties are the same for all samples in the batch, i.e. we don't mix datasets."""
+    if isinstance(batch[0][0], dict):
+        rpt_rows, column_embeddings, y, properties = zip(*batch)
+        properties = properties[0]
+        rpt_keys = rpt_rows[0].keys()
+        rpt_data = {k: np.stack([row[k] for row in rpt_rows]) for k in rpt_keys}
+        rpt_data["column_embeddings"] = column_embeddings[0]
+        y_dtype = torch.float32 if properties.d_output == 1 else torch.long
+        y = torch.tensor(y, dtype=y_dtype)
+        return rpt_data, None, y, properties
     x_txt, x_num, y, properties = zip(*batch)
     x_txt = np.array(x_txt)
     x_num = torch.tensor(np.array(x_num), dtype=torch.float32)

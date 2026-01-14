@@ -1,3 +1,4 @@
+import os
 import os.path
 import time
 from typing import Optional, Tuple, List
@@ -13,7 +14,9 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from sap_rpt_oss.constants import ModelSize
 from tabstar.arch.arch import TabStarModel
+from tabstar.arch.rpt_model import TabStarRPTModel
 from tabstar.datasets.all_datasets import TabularDatasetID
 from tabstar.training.devices import CPU_CORES
 from tabstar.training.early_stopping import EarlyStopping
@@ -68,15 +71,29 @@ class TabSTARPretrainer:
 
     def initialize_data_dirs(self):
         for d in tqdm(self.dataset_ids, desc="Initializing data dirs", leave=False):
-            data_dir = create_pretrain_dataset(dataset_id=d)
+            data_dir = create_pretrain_dataset(dataset_id=d, encoder_backend=self.args.encoder_backend)
             self.data_dirs.append(data_dir)
             dev_dataloader = get_dev_dataloader(data_dir=data_dir, batch_size=self.train_args.batch_size)
             self.dev_dataloaders.append(dev_dataloader)
 
     def initialize_model(self):
-        config = TabStarConfig(num_layers=self.args.tabular_layers, unfreeze_layers=self.args.unfreeze_layers)
-        self.model = TabStarModel(config=config)
-        unfreeze_text_encoder(text_encoder=self.model.text_encoder, layers_to_unfreeze=config.unfreeze_layers)
+        if self.args.encoder_backend == "rpt":
+            checkpoint_path = self.args.rpt_checkpoint or os.getenv("RPT_CHECKPOINT")
+            if checkpoint_path and not os.path.exists(checkpoint_path):
+                print(f"⚠️ RPT checkpoint not found: {checkpoint_path}. Using random init.")
+                checkpoint_path = None
+            model_size = ModelSize[self.args.rpt_model_size.lower()]
+            self.model = TabStarRPTModel(
+                rpt_model_size=model_size,
+                rpt_checkpoint_path=checkpoint_path,
+                tabular_layers=self.args.tabular_layers,
+            )
+        elif self.args.encoder_backend == "tabstar":
+            config = TabStarConfig(num_layers=self.args.tabular_layers, unfreeze_layers=self.args.unfreeze_layers)
+            self.model = TabStarModel(config=config)
+            unfreeze_text_encoder(text_encoder=self.model.text_encoder, layers_to_unfreeze=config.unfreeze_layers)
+        else:
+            raise ValueError(f"Unknown encoder_backend: {self.args.encoder_backend}")
         self.model.to(self.device)
         assert isinstance(self.model, Module)
         self.init_optimizer()
@@ -132,7 +149,7 @@ class TabSTARPretrainer:
                 print(f"Epoch {epoch} || Time {elapsed:.2f} || Train {train_loss:.5f} || Val {dev_loss:.5f} || Metric {dev_metric:.5f} {emoji}")
                 self.early_stopper.update(dev_metric)
                 if self.early_stopper.is_best:
-                    self.model.save_pretrained(get_model_path(self.run_name))
+                    self._save_best_model()
                 elif self.early_stopper.should_stop:
                     print(f"Early stopping at epoch {epoch}")
                     break
@@ -142,10 +159,13 @@ class TabSTARPretrainer:
         wandb.log({'train_epochs': epoch})
         return self.early_stopper.metric
 
-    def do_forward(self, x_txt: np.ndarray, x_num: Tensor, y: Tensor, properties: DatasetProperties) -> Tuple[Tensor, Tensor]:
-        x_num = x_num.to(self.device)
+    def do_forward(self, x_txt: np.ndarray | dict, x_num: Tensor, y: Tensor, properties: DatasetProperties) -> Tuple[Tensor, Tensor]:
         y = y.to(self.device)
-        predictions = self.model(x_txt=x_txt, x_num=x_num, d_output=properties.d_output)
+        if properties.encoder_backend == "rpt":
+            predictions = self.model(rpt_data=x_txt, d_output=properties.d_output)
+        else:
+            x_num = x_num.to(self.device)
+            predictions = self.model(x_txt=x_txt, x_num=x_num, d_output=properties.d_output)
         loss = calculate_loss(predictions=predictions, y=y, d_output=properties.d_output)
         return predictions, loss
 
@@ -226,3 +246,11 @@ class TabSTARPretrainer:
         self.epoch = cp.epoch
         self.steps = cp.steps
         print(f"⏪ Loaded checkpoint from {load_path} at epoch {self.epoch}.")
+
+    def _save_best_model(self):
+        save_dir = get_model_path(self.run_name)
+        if hasattr(self.model, "save_pretrained"):
+            self.model.save_pretrained(save_dir)
+            return
+        os.makedirs(save_dir, exist_ok=True)
+        torch.save(self.model.state_dict(), os.path.join(save_dir, "pytorch_model.bin"))

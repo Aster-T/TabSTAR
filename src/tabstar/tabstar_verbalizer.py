@@ -20,12 +20,18 @@ from tabstar.preprocessing.verbalize import prepend_target_tokens, verbalize_tex
 @dataclass
 class TabSTARData:
     d_output: int
-    x_txt: DataFrame | np.ndarray
-    x_num: np.ndarray
+    x_txt: DataFrame | np.ndarray | None
+    x_num: np.ndarray | None
     y: Optional[Series] = None
+    rpt_data: Optional[Dict[str, np.ndarray]] = None
+    rpt_column_embeddings: Optional[np.ndarray] = None
 
     def __len__(self) -> int:
-        return len(self.x_txt)
+        if self.x_txt is not None:
+            return len(self.x_txt)
+        if self.rpt_data is not None:
+            return len(next(iter(self.rpt_data.values())))
+        return 0
 
 class TabSTARVerbalizer:
     def __init__(self, is_cls: bool, verbose: bool = False):

@@ -7,6 +7,7 @@ import numpy as np
 from tabstar.datasets.all_datasets import TabularDatasetID
 from tabstar.preprocessing.nulls import raise_if_null_target
 from tabstar.preprocessing.splits import split_to_val
+from tabstar.rpt_preprocessor import TabSTARRPTPreprocessor
 from tabstar.tabstar_verbalizer import TabSTARVerbalizer, TabSTARData
 from tabstar_paper.datasets.curation import TabularDataset
 from tabstar_paper.datasets.downloading import download_dataset
@@ -17,19 +18,33 @@ MAX_PRETRAIN_EXAMPLES = 300_000
 MAX_PRETRAIN_FEATURES = 200
 
 
-def create_pretrain_dataset(dataset_id: TabularDatasetID, cache_dir: str = ".tabstar_datasets") -> str:
-    data_dir = join(cache_dir, dataset_id.name.replace('/', '_'))
+def create_pretrain_dataset(
+    dataset_id: TabularDatasetID,
+    cache_dir: str = ".tabstar_datasets",
+    encoder_backend: str = "tabstar",
+) -> str:
+    prefix = "" if encoder_backend == "tabstar" else f"{encoder_backend}_"
+    data_dir = join(cache_dir, f"{prefix}{dataset_id.name.replace('/', '_')}")
     if exists(join(data_dir, HDF5Dataset.PROPERTIES)):
         return data_dir
-    train_data, val_data = prepare_pretrain_dataset(dataset_id=dataset_id)
-    idx2text = fill_idx2text(train_data=train_data, val_data=val_data)
+    train_data, val_data = prepare_pretrain_dataset(dataset_id=dataset_id, encoder_backend=encoder_backend)
+    if encoder_backend == "rpt":
+        idx2text = {}
+    else:
+        idx2text = fill_idx2text(train_data=train_data, val_data=val_data)
     properties = DatasetProperties(name=dataset_id.name, d_output=train_data.d_output, idx2text=idx2text,
+                                   encoder_backend=encoder_backend,
+                                   rpt_keys=list(train_data.rpt_data.keys()) if train_data.rpt_data is not None else None,
                                    train_size=len(train_data), val_size=len(val_data))
     save_pretrain_dataset(data_dir=data_dir, train_data=train_data, val_data=val_data, properties=properties)
     return data_dir
 
 
-def prepare_pretrain_dataset(dataset_id: TabularDatasetID, verbose: bool = False) -> Tuple[TabSTARData, TabSTARData]:
+def prepare_pretrain_dataset(
+    dataset_id: TabularDatasetID,
+    verbose: bool = False,
+    encoder_backend: str = "tabstar",
+) -> Tuple[TabSTARData, TabSTARData]:
     # TODO: extend this to be from a CSV
     dataset = download_dataset(dataset_id=dataset_id)
     raise_if_null_target(dataset.y)
@@ -37,7 +52,10 @@ def prepare_pretrain_dataset(dataset_id: TabularDatasetID, verbose: bool = False
     _downsample_max_examples(dataset)
     x_train, x_val, y_train, y_val = split_to_val(x=dataset.x, y=dataset.y, is_cls=dataset.is_cls,
                                                   val_ratio=PRETRAIN_VAL_RATIO)
-    preprocessor = TabSTARVerbalizer(is_cls=dataset.is_cls, verbose=verbose)
+    if encoder_backend == "rpt":
+        preprocessor = TabSTARRPTPreprocessor(is_cls=dataset.is_cls, verbose=verbose)
+    else:
+        preprocessor = TabSTARVerbalizer(is_cls=dataset.is_cls, verbose=verbose)
     preprocessor.fit(x_train, y_train)
     train_data = preprocessor.transform(x_train, y_train)
     val_data = preprocessor.transform(x_val, y_val)

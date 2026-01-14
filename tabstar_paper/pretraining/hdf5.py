@@ -1,7 +1,7 @@
 import os.path
 from dataclasses import dataclass, asdict
 from os.path import join
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import h5py
 import numpy as np
@@ -19,6 +19,8 @@ class DatasetProperties:
     idx2text: Dict[int, str]
     train_size: int
     val_size: int
+    encoder_backend: str = "tabstar"
+    rpt_keys: Optional[List[str]] = None
 
     @classmethod
     def from_json(cls, data_dir: str) -> 'DatasetProperties':
@@ -49,6 +51,8 @@ class HDF5Dataset(Dataset):
     X_TXT_KEY = "X_txt"
     X_NUM_KEY = "X_num"
     Y_KEY = "y"
+    RPT_PREFIX = "RPT_"
+    RPT_COLUMN_EMBEDDINGS = "RPT_column_embeddings"
     H5_FILE = "data.h5"
     PROPERTIES = "properties.json"
 
@@ -58,6 +62,7 @@ class HDF5Dataset(Dataset):
         self.properties: DatasetProperties = DatasetProperties.from_json(data_dir)
         self.size: int = self.properties.train_size if is_train else self.properties.val_size
         self.h5_file: Optional[h5py.File] = None
+        self.rpt_column_embeddings: Optional[np.ndarray] = None
 
     def __len__(self) -> int:
         return self.size
@@ -65,10 +70,20 @@ class HDF5Dataset(Dataset):
     def __getitem__(self, idx):
         # Open the HDF5 file and read a specific single sample
         self.open()
+        y = self.h5_file[self.Y_KEY][idx]
+        if self.properties.encoder_backend == "rpt":
+            if self.properties.rpt_keys is None:
+                raise ValueError("RPT keys missing in dataset properties.")
+            rpt_data = {
+                key: self.h5_file[f"{self.RPT_PREFIX}{key}"][idx]
+                for key in self.properties.rpt_keys
+            }
+            if self.rpt_column_embeddings is None:
+                self.rpt_column_embeddings = self.h5_file[self.RPT_COLUMN_EMBEDDINGS][:]
+            return rpt_data, self.rpt_column_embeddings, y, self.properties
         x_txt = self.h5_file[self.X_TXT_KEY][idx]
         x_txt = np.array([self.properties.idx2text[str(int(i))] for i in x_txt])
         x_num = self.h5_file[self.X_NUM_KEY][idx]
-        y = self.h5_file[self.Y_KEY][idx]
         return x_txt, x_num, y, self.properties
 
     def open(self):
@@ -82,17 +97,21 @@ class HDF5Dataset(Dataset):
 
 def save_pretrain_dataset(data_dir: str, train_data: TabSTARData, val_data: TabSTARData, properties: DatasetProperties):
     property_path = join(data_dir, HDF5Dataset.PROPERTIES)
+    if train_data.rpt_data is not None and properties.rpt_keys is None:
+        properties.rpt_keys = list(train_data.rpt_data.keys())
     dump_json(asdict(properties), path=property_path)
     for data, split in [(train_data, HDF5Dataset.TRAIN), (val_data, HDF5Dataset.VAL)]:
         split_dir = join(data_dir, split)
         os.makedirs(split_dir, exist_ok=True)
         h5_file_path = join(split_dir, HDF5Dataset.H5_FILE)
-        key2data = {
-            HDF5Dataset.X_TXT_KEY: data.x_txt,
-            HDF5Dataset.X_NUM_KEY: data.x_num,
-            HDF5Dataset.Y_KEY: data.y
-        }
+        key2data = {HDF5Dataset.Y_KEY: data.y}
+        if data.rpt_data is not None:
+            for key, value in data.rpt_data.items():
+                key2data[f"{HDF5Dataset.RPT_PREFIX}{key}"] = value
+            key2data[HDF5Dataset.RPT_COLUMN_EMBEDDINGS] = data.rpt_column_embeddings
+        else:
+            key2data[HDF5Dataset.X_TXT_KEY] = data.x_txt
+            key2data[HDF5Dataset.X_NUM_KEY] = data.x_num
         with h5py.File(h5_file_path, 'w') as h5f:
             for key, value in key2data.items():
                 h5f.create_dataset(name=key, data=value)
-

@@ -11,6 +11,8 @@ from torch import softmax
 from tabstar.preprocessing.nulls import raise_if_null_target
 from tabstar.preprocessing.splits import split_to_val
 from tabstar.tabstar_datasets import get_tabstar_version
+from sap_rpt_oss.constants import ModelSize
+from tabstar.rpt_preprocessor import TabSTARRPTPreprocessor
 from tabstar.tabstar_verbalizer import TabSTARVerbalizer, TabSTARData
 from tabstar.training.dataloader import get_dataloader
 from tabstar.training.devices import get_device
@@ -41,6 +43,9 @@ class BaseTabSTAR:
                  keep_model: bool = True,
                  output_dir: Optional[str] = None,
                  val_batch_size: int = VAL_BATCH,
+                 encoder_backend: str = "tabstar",
+                 rpt_model_size: ModelSize = ModelSize.base,
+                 rpt_checkpoint_path: Optional[str] = None,
                  ):
         self.cp_average = not bool(is_paper_version)
         self.lora_lr = lora_lr
@@ -54,7 +59,12 @@ class BaseTabSTAR:
         self.max_epochs = max_epochs
         self.patience = patience
         self.verbose = verbose
-        self.preprocessor_: Optional[TabSTARVerbalizer] = None
+        self.encoder_backend = encoder_backend
+        if self.encoder_backend not in {"tabstar", "rpt"}:
+            raise ValueError(f"Unknown encoder_backend: {self.encoder_backend}")
+        self.rpt_model_size = rpt_model_size
+        self.rpt_checkpoint_path = rpt_checkpoint_path
+        self.preprocessor_: Optional[TabSTARVerbalizer | TabSTARRPTPreprocessor] = None
         self.model_: Optional[PeftModel] = None
         self.random_state = random_state
         self.time_limit = time_limit
@@ -69,7 +79,8 @@ class BaseTabSTAR:
     def fit(self, X: DataFrame, y: Series, x_val: Optional[DataFrame] = None, y_val: Optional[DataFrame] = None):
         if self.model_ is not None:
             raise ValueError("Model is already trained. Call fit() only once.")
-        self.download_base_model()
+        if self.encoder_backend == "tabstar":
+            self.download_base_model()
         self.vprint(f"Fitting model on data with shapes: X={X.shape}, y={y.shape}")
         train_data, val_data = self._prepare_for_train(X, y, x_val, y_val)
         self.vprint(f"We have: {len(train_data)} training and {len(val_data)} validation samples.")
@@ -87,7 +98,10 @@ class BaseTabSTAR:
                                  cp_average=self.cp_average,
                                  time_limit=self.time_limit,
                                  output_dir=self.output_dir,
-                                 val_batch_size=self.val_batch_size)
+                                 val_batch_size=self.val_batch_size,
+                                 encoder_backend=self.encoder_backend,
+                                 rpt_model_size=self.rpt_model_size,
+                                 rpt_checkpoint_path=self.rpt_checkpoint_path)
         trainer.train(train_data, val_data)
         self.model_ = trainer.load_model()
         if not self.keep_model:
@@ -126,7 +140,10 @@ class BaseTabSTAR:
             y_train = y.copy()
             raise_if_null_target(y_val)
         if self.preprocessor_ is None:
-            self.preprocessor_ = TabSTARVerbalizer(is_cls=self.is_cls, verbose=self.verbose)
+            if self.encoder_backend == "rpt":
+                self.preprocessor_ = TabSTARRPTPreprocessor(is_cls=self.is_cls, verbose=self.verbose)
+            else:
+                self.preprocessor_ = TabSTARVerbalizer(is_cls=self.is_cls, verbose=self.verbose)
             self.preprocessor_.fit(x_train, y_train)
         train_data = self.preprocessor_.transform(x_train, y_train)
         self.vprint(f"Transformed training data: {train_data.x_txt.shape=}, x_num shape: {train_data.x_num.shape=}")
@@ -140,7 +157,10 @@ class BaseTabSTAR:
         predictions = []
         for data in dataloader:
             with torch.no_grad(), torch.autocast(device_type=self.device.type, enabled=self.use_amp):
-                batch_predictions = self.model_(x_txt=data.x_txt, x_num=data.x_num, d_output=data.d_output)
+                if data.rpt_data is not None:
+                    batch_predictions = self.model_(rpt_data=data.rpt_data, d_output=data.d_output)
+                else:
+                    batch_predictions = self.model_(x_txt=data.x_txt, x_num=data.x_num, d_output=data.d_output)
             batch_predictions = batch_predictions.to(torch.float32)
             if self.is_cls:
                 batch_predictions = softmax(batch_predictions, dim=1)
@@ -205,5 +225,4 @@ class TabSTARRegressor(BaseTabSTAR, BaseEstimator, RegressorMixin):
     @property
     def is_cls(self) -> bool:
         return False
-
 

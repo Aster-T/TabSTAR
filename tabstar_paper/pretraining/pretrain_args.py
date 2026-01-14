@@ -17,6 +17,9 @@ class PretrainArgs:
     datasets: List[Any]
     timestamp: str
     num_datasets: int
+    encoder_backend: str = "tabstar"
+    rpt_model_size: str = "base"
+    rpt_checkpoint: Optional[str] = None
     fold: Optional[int] = None
     checkpoint: Optional[int] = None
 
@@ -27,6 +30,9 @@ class PretrainArgs:
                             tabular_layers=args.tabular_layers,
                             unfreeze_layers=args.e5_unfreeze_layers,
                             datasets=[d.value for d in pretrain_data],
+                            encoder_backend=args.encoder_backend,
+                            rpt_model_size=args.rpt_model_size,
+                            rpt_checkpoint=args.rpt_checkpoint,
                             fold=args.fold,
                             timestamp=get_now(),
                             num_datasets=num_datasets,
