@@ -118,10 +118,10 @@ class TabSTARRPTPreprocessor:
         else:
             y_context = y
         y_context = y_context.to_frame()
-        y_query = y_context.iloc[:0].copy()
-
         x_context = x
-        x_query = x_context.iloc[:0].copy()
+        # Tokenizer expects a non-empty query set for standardization; use a single dummy row.
+        x_query = x_context.iloc[:1].copy()
+        y_query = y_context.iloc[:1].copy()        
 
         task = "classification" if self.is_cls else "regression"
         data, _, _ = self.tokenizer(
@@ -131,7 +131,10 @@ class TabSTARRPTPreprocessor:
             y_query=y_query,
             classification_or_regression=task,
         )
-
+        # Drop the dummy query row to keep dataset size aligned with input.
+        context_size = len(y_context)
+        data = {k: v[:context_size] for k, v in data.items()}
+        
         # Remove any target leakage in the last (target) column.
         data["text_embeddings"][:, -1] = 0
         data["target"].fill_(-100)
